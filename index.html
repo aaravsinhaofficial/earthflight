@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EarthFlight — Fly the Real World</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/src/styles.css" />
+</head>
+<body>
+  <!-- Cesium globe renders here -->
+  <div id="cesiumContainer"></div>
+
+  <!-- Loading screen -->
+  <div id="loading" class="overlay">
+    <div class="loading-box">
+      <div class="logo">✈ EARTH<span>FLIGHT</span></div>
+      <div class="loading-bar"><div id="loadingBar"></div></div>
+      <div id="loadingText" class="loading-text">Spinning up the globe…</div>
+    </div>
+  </div>
+
+  <!-- Heads-up display (drawn over the globe) -->
+  <div id="hud" class="hud hidden">
+    <!-- top-left flight data -->
+    <div class="hud-corner hud-tl">
+      <div class="hud-row"><span class="lbl">SPD</span><span id="hudSpd" class="val">0</span><span class="unit">kt</span></div>
+      <div class="hud-row"><span class="lbl">ALT</span><span id="hudAlt" class="val">0</span><span class="unit">ft</span></div>
+      <div class="hud-row"><span class="lbl">AGL</span><span id="hudAgl" class="val">0</span><span class="unit">ft</span></div>
+      <div class="hud-row"><span class="lbl">VS</span><span id="hudVs" class="val">0</span><span class="unit">fpm</span></div>
+    </div>
+    <!-- top-right status -->
+    <div class="hud-corner hud-tr">
+      <div class="hud-row"><span class="lbl">HDG</span><span id="hudHdg" class="val">000</span></div>
+      <div class="hud-row"><span class="lbl">THR</span><span id="hudThr" class="val">0</span><span class="unit">%</span></div>
+      <div class="hud-row"><span class="lbl">AOA</span><span id="hudAoa" class="val">0</span><span class="unit">°</span></div>
+      <div class="hud-row"><span class="lbl">G</span><span id="hudG" class="val">1.0</span></div>
+    </div>
+    <!-- center reticle + warnings -->
+    <div class="hud-center">
+      <div id="stallWarn" class="warn hidden">STALL</div>
+      <div id="gearWarn" class="warn warn-amber hidden">GEAR UP</div>
+    </div>
+    <!-- bottom control state -->
+    <div class="hud-bottom">
+      <span id="flapPill" class="pill">FLAPS 0</span>
+      <span id="gearPill" class="pill pill-on">GEAR DOWN</span>
+      <span id="brakePill" class="pill">BRAKE</span>
+      <span id="parkPill" class="pill pill-on">PARK</span>
+      <span id="apPill" class="pill">AP OFF</span>
+      <span id="camPill" class="pill">CHASE</span>
+    </div>
+  </div>
+
+  <!-- Instrument panel (six-pack of gauges) -->
+  <div id="panel" class="panel hidden">
+    <div class="gauge" id="g-asi"></div>
+    <div class="gauge" id="g-attitude"></div>
+    <div class="gauge" id="g-alt"></div>
+    <div class="gauge" id="g-turn"></div>
+    <div class="gauge" id="g-heading"></div>
+    <div class="gauge" id="g-vsi"></div>
+    <div class="throttle-quad">
+      <div class="tq-label">THROTTLE</div>
+      <div class="tq-track"><div id="tqFill" class="tq-fill"></div></div>
+      <div id="tqPct" class="tq-pct">0%</div>
+    </div>
+  </div>
+
+  <!-- Top toolbar -->
+  <div id="toolbar" class="toolbar hidden">
+    <button class="tb-btn" id="btnMenu" title="Menu (Esc)">☰</button>
+    <div class="tb-title">✈ EarthFlight</div>
+    <div class="tb-spacer"></div>
+    <div class="tb-coords" id="tbCoords">—</div>
+    <button class="tb-btn" id="btnPanel" title="Toggle instrument panel (P)">🎛</button>
+    <button class="tb-btn" id="btnCam" title="Cycle camera (C)">🎥</button>
+    <button class="tb-btn" id="btnHelp" title="Help (H)">?</button>
+  </div>
+
+  <!-- Menu / settings panel -->
+  <div id="menu" class="menu hidden">
+    <div class="menu-card">
+      <div class="menu-head">
+        <span>✈ EarthFlight</span>
+        <button class="x" id="menuClose">×</button>
+      </div>
+      <div class="menu-tabs">
+        <button class="mt active" data-tab="fly">Fly</button>
+        <button class="mt" data-tab="aircraft">Aircraft</button>
+        <button class="mt" data-tab="world">World</button>
+        <button class="mt" data-tab="controls">Controls</button>
+      </div>
+
+      <div class="menu-body">
+        <!-- FLY TAB -->
+        <section class="tab active" data-tab="fly">
+          <h3>Start at an airport</h3>
+          <div id="airportList" class="airport-list"></div>
+          <h3>Fly to coordinates / city</h3>
+          <div class="row">
+            <input id="searchBox" type="text" placeholder="e.g. Tokyo, or 29.98 -95.34" />
+            <button id="searchBtn" class="btn">Go</button>
+          </div>
+          <div class="row gap">
+            <button id="btnPause" class="btn">⏸ Pause</button>
+            <button id="btnReset" class="btn">↺ Reset position</button>
+          </div>
+        </section>
+
+        <!-- AIRCRAFT TAB -->
+        <section class="tab" data-tab="aircraft">
+          <h3>Choose aircraft</h3>
+          <div id="aircraftList" class="aircraft-list"></div>
+        </section>
+
+        <!-- WORLD TAB -->
+        <section class="tab" data-tab="world">
+          <h3>Time of day</h3>
+          <input id="timeSlider" type="range" min="0" max="24" step="0.1" value="14" />
+          <div class="hint" id="timeLabel">14:00 local-ish</div>
+
+          <h3>Scenery quality</h3>
+          <div class="seg" id="qualitySeg">
+            <button data-q="low">Low</button>
+            <button data-q="med" class="active">Medium</button>
+            <button data-q="high">High</button>
+          </div>
+
+          <h3>Unlock photorealistic Earth (optional)</h3>
+          <p class="hint">
+            Out of the box you fly over free worldwide satellite imagery — no key needed.
+            Paste a free <b>Cesium ion</b> token for 3D terrain + buildings, and/or a
+            <b>Google Maps</b> API key for full Google-Earth photorealistic 3D tiles.
+            Keys are stored only in your browser (localStorage).
+          </p>
+          <div class="field">
+            <label>Cesium ion access token</label>
+            <input id="ionToken" type="password" placeholder="eyJhbGciOi…" />
+          </div>
+          <div class="field">
+            <label>Google Maps API key</label>
+            <input id="googleKey" type="password" placeholder="AIza…" />
+          </div>
+          <div class="seg" id="worldSeg">
+            <button data-w="satellite" class="active">Satellite (free)</button>
+            <button data-w="ion">ion terrain + buildings</button>
+            <button data-w="google">Google 3D</button>
+          </div>
+          <div class="row gap">
+            <button id="btnApplyWorld" class="btn primary">Apply &amp; reload world</button>
+          </div>
+          <p class="hint" id="worldStatus"></p>
+        </section>
+
+        <!-- CONTROLS TAB -->
+        <section class="tab" data-tab="controls">
+          <h3>Keyboard</h3>
+          <div class="keys" id="keyHelp"></div>
+          <h3>Gamepad / joystick</h3>
+          <p class="hint" id="padStatus">No gamepad detected. Plug one in and press a button.</p>
+          <div class="field-check">
+            <label><input type="checkbox" id="invertY" /> Invert pitch (Y) axis</label>
+          </div>
+          <div class="field">
+            <label>Control sensitivity</label>
+            <input id="sensSlider" type="range" min="0.4" max="2" step="0.05" value="1" />
+          </div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <!-- Help quick-reference -->
+  <div id="help" class="help hidden">
+    <div class="help-card">
+      <button class="x" id="helpClose">×</button>
+      <h2>How to fly</h2>
+      <div class="help-grid" id="helpGrid"></div>
+      <p class="hint">Press <b>H</b> to toggle this anytime. Throttle up, build speed on the runway, then ease back on the stick to climb.</p>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
