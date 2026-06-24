@@ -1,5 +1,5 @@
 // Menu system, settings panel, airport/aircraft pickers, search, help overlay.
-import { AIRPORTS, AIRCRAFT, KEY_HELP, saveSettings } from './config.js';
+import { AIRPORTS, AIRCRAFT, ROUTES, KEY_HELP, saveSettings } from './config.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -7,6 +7,7 @@ export class UI {
   constructor(app, settings) {
     this.app = app;
     this.s = settings;
+    this._buildRoutes();
     this._buildAirports();
     this._buildAircraft();
     this._buildKeyHelp();
@@ -16,6 +17,19 @@ export class UI {
   }
 
   // ---- build dynamic lists ----
+  _buildRoutes() {
+    const host = document.getElementById('routeList');
+    if (!host) return;
+    host.innerHTML = '';
+    for (const r of ROUTES) {
+      const b = document.createElement('button');
+      b.className = 'route';
+      b.innerHTML = `<span class="ic">🧭</span><span class="nm">${r.name}</span><span class="note">${r.note}</span>`;
+      b.onclick = () => { this.app.setRoute(r); this.closeMenu(); };
+      host.appendChild(b);
+    }
+  }
+
   _buildAirports() {
     const host = $('airportList');
     host.innerHTML = '';

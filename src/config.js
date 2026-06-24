@@ -4,7 +4,7 @@
 // Optional. The sim runs with NO keys using free worldwide satellite imagery.
 // Users can paste keys in-app (World tab); those are saved to localStorage and
 // take precedence over anything here.
-export const DEFAULT_ION_TOKEN = '';   // free token from https://cesium.com/ion
+export const DEFAULT_ION_TOKEN = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiIyYzk1N2YwNC0zMzk5LTQxMzMtYTdlMS1lYzU3MTcyNDljYjkiLCJpZCI6NDQ4MzA4LCJpc3MiOiJodHRwczovL2FwaS5jZXNpdW0uY29tIiwiYXVkIjoidW5kZWZpbmVkX2RlZmF1bHQiLCJpYXQiOjE3ODIyNjI1ODl9.mM_tnWpnO7I6Rs3YXzwLH1rxA3BetMKWYbokXG09mYU'; // Cesium ion token → 3D terrain + buildings
 export const DEFAULT_GOOGLE_KEY = '';  // Google Maps Platform "Map Tiles API" key
 
 // ── Aircraft definitions ─────────────────────────────────────────────────────
@@ -22,10 +22,19 @@ export const AIRCRAFT = {
     scale: 1.0,
     minimumPixelSize: 64,
     mass: 1100, wingArea: 15.8, clAlpha: 5.7, cl0: 0.25, clMax: 1.55,
-    cd0: 0.030, inducedK: 0.050, maxThrust: 2600,
+    cd0: 0.030, inducedK: 0.050, maxThrust: 3600,
     flapClBonus: 0.5, flapDrag: 0.02, gearDrag: 0.0,
     rollRate: 1.8, pitchRate: 1.0, yawRate: 0.6,
     wheelHeight: 1.4, stallSpeed: 27, vne: 92,
+    span: 9.1, Ixx: 1300, Iyy: 1700, Izz: 2800,
+    surfaces: {
+      aileronL: { node: 'aileronG', axis: 'x', pivot: [-3.916, -0.726, 1.023], max: 16, driver: 'roll', sign: 1 },
+      aileronR: { node: 'aileronD', axis: 'x', pivot: [3.693, -0.729, 1.062], max: 16, driver: 'roll', sign: -1 },
+      flapL: { node: 'voletG', axis: 'x', pivot: [-1.743, -0.743, 0.78], max: 22, driver: 'flaps', sign: 1 },
+      flapR: { node: 'voletD', axis: 'x', pivot: [1.49, -0.743, 0.78], max: 22, driver: 'flaps', sign: 1 },
+      rudder: { node: 'direction', axis: 'z', pivot: [-0.126, -4.269, 2.066], max: 18, driver: 'yaw', sign: 1 },
+    },
+    gearNodes: ['roueA', 'roueD', 'roueG', 'pate', 'patte'],
     cockpit: { forward: 2.4, up: 1.0 }, chase: { back: 22, up: 7 }, propVisual: true,
   },
   citation: {
@@ -41,6 +50,16 @@ export const AIRCRAFT = {
     flapClBonus: 0.6, flapDrag: 0.03, gearDrag: 0.02,
     rollRate: 1.6, pitchRate: 0.9, yawRate: 0.45,
     wheelHeight: 2.0, stallSpeed: 50, vne: 235,
+    span: 16, Ixx: 28000, Iyy: 35000, Izz: 55000,
+    surfaces: {
+      aileronL: { node: 'LHaileron', axis: 'x', pivot: [-5.683, -1.407, 0.691], max: 16, driver: 'roll', sign: 1 },
+      aileronR: { node: 'RHaileron', axis: 'x', pivot: [5.736, -1.407, 0.691], max: 16, driver: 'roll', sign: -1 },
+      elevatorL: { node: 'LHelevator', axis: 'x', pivot: [-1.396, -6.616, 2.077], max: 16, driver: 'pitch', sign: 1 },
+      elevatorR: { node: 'RHelevator', axis: 'x', pivot: [1.441, -6.616, 2.077], max: 16, driver: 'pitch', sign: 1 },
+      flapL: { node: 'LHflap', axis: 'x', pivot: [-2.984, -1.775, 0.476], max: 22, driver: 'flaps', sign: 1 },
+      flapR: { node: 'RHflap', axis: 'x', pivot: [3.037, -1.775, 0.476], max: 22, driver: 'flaps', sign: 1 },
+      rudder: { node: 'Rudder', axis: 'z', pivot: [0.027, -7.363, 2.784], max: 18, driver: 'yaw', sign: 1 },
+    },
     cockpit: { forward: 6.5, up: 1.6 }, chase: { back: 40, up: 12 }, propVisual: false,
   },
   b738: {
@@ -56,6 +75,16 @@ export const AIRCRAFT = {
     flapClBonus: 0.8, flapDrag: 0.035, gearDrag: 0.022,
     rollRate: 1.1, pitchRate: 0.65, yawRate: 0.3,
     wheelHeight: 2.4, stallSpeed: 62, vne: 290,
+    span: 35.8, Ixx: 2400000, Iyy: 4500000, Izz: 6700000,
+    surfaces: {
+      aileronL: { node: 'lhaileron', axis: 'x', pivot: [-12.262, -3.138, 0.606], max: 16, driver: 'roll', sign: 1 },
+      aileronR: { node: 'rhaileron', axis: 'x', pivot: [12.41, -3.138, 0.606], max: 16, driver: 'roll', sign: -1 },
+      elevatorL: { node: 'lhelevator', axis: 'x', pivot: [-2.533, -18.065, 2.094], max: 16, driver: 'pitch', sign: 1 },
+      elevatorR: { node: 'rhelevator', axis: 'x', pivot: [2.705, -18.064, 2.094], max: 16, driver: 'pitch', sign: 1 },
+      flapL: { node: 'flapO_B', axis: 'x', pivot: [-8.025, -1.701, 0.105], max: 22, driver: 'flaps', sign: 1 },
+      flapR: { node: 'rhflapO_B', axis: 'x', pivot: [8.173, -1.701, 0.105], max: 22, driver: 'flaps', sign: 1 },
+      rudder: { node: 'rudder', axis: 'z', pivot: [17.893, -0.006, 5.984], max: 18, driver: 'yaw', sign: 1 },
+    },
     cockpit: { forward: 16, up: 2.4 }, chase: { back: 75, up: 20 }, propVisual: false,
   },
   a320: {
@@ -71,6 +100,7 @@ export const AIRCRAFT = {
     flapClBonus: 0.8, flapDrag: 0.035, gearDrag: 0.022,
     rollRate: 1.1, pitchRate: 0.65, yawRate: 0.3,
     wheelHeight: 2.4, stallSpeed: 60, vne: 290,
+    span: 35.8, Ixx: 2400000, Iyy: 4500000, Izz: 6700000,
     cockpit: { forward: 16, up: 2.4 }, chase: { back: 75, up: 20 }, propVisual: false,
   },
   b789: {
@@ -86,6 +116,12 @@ export const AIRCRAFT = {
     flapClBonus: 0.8, flapDrag: 0.035, gearDrag: 0.02,
     rollRate: 0.9, pitchRate: 0.55, yawRate: 0.25,
     wheelHeight: 3.0, stallSpeed: 68, vne: 295,
+    span: 60, Ixx: 11000000, Iyy: 27000000, Izz: 38000000,
+    surfaces: {
+      // The 787 model only separates some flap panels — animate those.
+      flapL: { node: 'lhkflap_001', axis: 'x', pivot: [-9.283, 0.893, -2.722], max: 22, driver: 'flaps', sign: 1 },
+      flapR: { node: 'rhkflap_001', axis: 'x', pivot: [8.238, 0.892, -2.715], max: 22, driver: 'flaps', sign: 1 },
+    },
     cockpit: { forward: 26, up: 3.2 }, chase: { back: 110, up: 28 }, propVisual: false,
   },
   b744: {
@@ -101,6 +137,14 @@ export const AIRCRAFT = {
     flapClBonus: 0.85, flapDrag: 0.04, gearDrag: 0.022,
     rollRate: 0.8, pitchRate: 0.5, yawRate: 0.22,
     wheelHeight: 4.5, stallSpeed: 75, vne: 295,
+    span: 64.4, Ixx: 24000000, Iyy: 45000000, Izz: 67000000,
+    surfaces: {
+      aileronL: { node: 'aileron_left_outer', axis: 'x', pivot: [-24.909, -15.396, 0.495], max: 16, driver: 'roll', sign: 1 },
+      aileronR: { node: 'aileron_right_outer', axis: 'x', pivot: [25.046, -15.396, 0.495], max: 16, driver: 'roll', sign: -1 },
+      elevatorL: { node: 'elevator_left', axis: 'x', pivot: [-4.868, -37.181, 2.733], max: 16, driver: 'pitch', sign: 1 },
+      elevatorR: { node: 'elevator_right', axis: 'x', pivot: [4.988, -37.181, 2.733], max: 16, driver: 'pitch', sign: 1 },
+      rudder: { node: 'rudder', axis: 'z', pivot: [36.987, -0.002, 8.887], max: 18, driver: 'yaw', sign: 1 },
+    },
     cockpit: { forward: 30, up: 4.5 }, chase: { back: 130, up: 34 }, propVisual: false,
   },
 };
@@ -128,6 +172,18 @@ export const AIRPORTS = [
   { id: 'GGATE', name: '✦ Golden Gate (airborne)', lat: 37.8199, lon: -122.4783, elev: 0, hdg: 320, airborne: 900 },
 ];
 
+export const airportById = (id) => AIRPORTS.find((a) => a.id === id);
+
+// ── Point-to-point routes (start on the runway at A, fly to B) ────────────────
+export const ROUTES = [
+  { id: 'IAH-HOU',   from: 'KIAH', to: 'KHOU', name: 'Houston Intl → Hobby',        note: 'short hop ~17 nm' },
+  { id: 'LAX-LAS',   from: 'KLAX', to: 'KLAS', name: 'Los Angeles → Las Vegas',     note: '~200 nm over the desert' },
+  { id: 'SFO-LAX',   from: 'KSFO', to: 'KLAX', name: 'San Francisco → Los Angeles', note: '~290 nm down the coast' },
+  { id: 'SEA-SFO',   from: 'KSEA', to: 'KSFO', name: 'Seattle → San Francisco',     note: '~590 nm' },
+  { id: 'EGLL-LFPG', from: 'EGLL', to: 'LFPG', name: 'London → Paris',              note: '~190 nm across the Channel' },
+  { id: 'JFK-IAH',   from: 'KJFK', to: 'KIAH', name: 'New York → Houston',          note: 'long haul ~1230 nm' },
+];
+
 // ── Keyboard bindings (shown in Controls/Help) ───────────────────────────────
 export const KEY_HELP = [
   ['W / S  or  ↑ / ↓', 'Pitch down / up (push / pull)'],
@@ -140,7 +196,7 @@ export const KEY_HELP = [
   ['B', 'Wheel brakes (hold)'],
   ['Space', 'Toggle parking brake'],
   ['[ / ]', 'Trim nose down / up'],
-  ['C', 'Cycle camera (chase / cockpit / orbit / flyby)'],
+  ['C', 'Cycle camera (chase / cockpit / orbit / flyby / top)'],
   ['T', 'Toggle wing-leveler autopilot'],
   ['P', 'Toggle instrument panel'],
   ['R', 'Reset to last start point'],

@@ -25,6 +25,7 @@ export class World {
       infoBox: false,
       selectionIndicator: false,
       shouldAnimate: true,
+      showRenderLoopErrors: false, // we handle render errors ourselves (see below)
       contextOptions: { webgl: { powerPreference: 'high-performance' } },
     });
 
@@ -38,9 +39,24 @@ export class World {
     scene.skyAtmosphere.show = true;
     scene.fog.enabled = true;
     scene.fog.density = 0.0001;
-    scene.highDynamicRange = true;
+    scene.highDynamicRange = false; // HDR doubles framebuffer memory — skip it for stability
     scene.postProcessStages.fxaa.enabled = true;
     scene.screenSpaceCameraController.enableCollisionDetection = true;
+
+    // Resilience: a single undecodable imagery tile or a transient GPU hiccup
+    // normally HALTS Cesium's render loop. Instead, shed load and resume.
+    this._renderErrors = 0;
+    scene.renderError.addEventListener((_scene, err) => {
+      this._renderErrors++;
+      console.warn('Cesium render error #' + this._renderErrors, err);
+      if (this._renderErrors <= 25) {
+        try {
+          scene.highDynamicRange = false;
+          if (this._renderErrors >= 2) this.setQuality('low'); // back off quality if it persists
+        } catch { /* ignore */ }
+        this.viewer.useDefaultRenderLoop = true; // resume rendering
+      }
+    });
 
     // We drive the camera ourselves; disable default mouse globe navigation.
     const c = scene.screenSpaceCameraController;
@@ -131,11 +147,18 @@ export class World {
   }
 
   async _addEsriImagery() {
+    // Use a direct tile-URL template (no `?f=json` metadata fetch). The metadata
+    // request gets rate-limited and returns HTML, which used to leave the globe
+    // textureless. Direct tiles just work.
     try {
-      const prov = await Cesium.ArcGisMapServerImageryProvider.fromUrl(ESRI_IMAGERY);
-      this.viewer.imageryLayers.addImageryProvider(prov);
+      this.viewer.imageryLayers.addImageryProvider(
+        new Cesium.UrlTemplateImageryProvider({
+          url: ESRI_IMAGERY + '/tile/{z}/{y}/{x}',
+          maximumLevel: 19,
+          credit: 'Esri, Maxar, Earthstar Geographics, and the GIS community',
+        })
+      );
     } catch (e) {
-      // last-ditch: OpenStreetMap raster (always available, no key)
       console.warn('ESRI imagery failed, using OSM', e);
       this.viewer.imageryLayers.addImageryProvider(
         new Cesium.OpenStreetMapImageryProvider({ url: 'https://tile.openstreetmap.org/' })
@@ -146,7 +169,7 @@ export class World {
   // Draw a runway (asphalt + centerline + edge stripes) draped on the ground at a
   // grounded spawn so you clearly start lined up for takeoff. Call hideRunway()
   // for airborne starts.
-  showRunway(lonDeg, latDeg, headingDeg, length = 2600, width = 46) {
+  showRunway(lonDeg, latDeg, headingDeg, length = 3800, width = 60) {
     this.hideRunway();
     const hdg = headingDeg * Math.PI / 180;
     const cosL = Math.cos(latDeg * Math.PI / 180);
@@ -194,6 +217,37 @@ export class World {
 
   hideRunway() {
     if (this._runway) { this._runway.forEach((e) => this.viewer.entities.remove(e)); this._runway = null; }
+  }
+
+  // Draw a route line from origin to destination + a tall destination beacon.
+  showRoute(fromLat, fromLon, toLat, toLon, toName) {
+    this.hideRoute();
+    const ents = this.viewer.entities;
+    const glow = (c, p) => new Cesium.PolylineGlowMaterialProperty({ color: c, glowPower: p });
+    this._route = [];
+    this._route.push(ents.add({
+      polyline: {
+        positions: Cesium.Cartesian3.fromDegreesArray([fromLon, fromLat, toLon, toLat]),
+        width: 3, clampToGround: true, material: glow(Cesium.Color.CYAN, 0.25),
+      },
+    }));
+    this._route.push(ents.add({
+      position: Cesium.Cartesian3.fromDegrees(toLon, toLat, 1600),
+      polyline: {
+        positions: Cesium.Cartesian3.fromDegreesArrayHeights([toLon, toLat, 0, toLon, toLat, 3200]),
+        width: 4, material: glow(Cesium.Color.CYAN.withAlpha(0.85), 0.35),
+      },
+      label: {
+        text: '🎯 ' + toName, font: 'bold 14px -apple-system, sans-serif', fillColor: Cesium.Color.WHITE,
+        showBackground: true, backgroundColor: Cesium.Color.fromCssColorString('rgba(10,13,18,0.85)'),
+        verticalOrigin: Cesium.VerticalOrigin.BOTTOM, pixelOffset: new Cesium.Cartesian2(0, -8),
+        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+      },
+    }));
+  }
+
+  hideRoute() {
+    if (this._route) { this._route.forEach((e) => this.viewer.entities.remove(e)); this._route = null; }
   }
 
   // hour: 0..24 (UTC-ish). Drives sun position for day/night lighting.

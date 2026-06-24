@@ -11,9 +11,16 @@ export class Hud {
       stall: $('stallWarn'), gearW: $('gearWarn'),
       flap: $('flapPill'), gear: $('gearPill'), brake: $('brakePill'),
       park: $('parkPill'), ap: $('apPill'), cam: $('camPill'),
-      tqFill: $('tqFill'), tqPct: $('tqPct'), coords: $('tbCoords'),
+      tqFill: $('tqFill'), tqPct: $('tqPct'), coords: $('tbCoords'), dest: $('hudDest'),
     };
     this._blink = 0;
+  }
+
+  updateDest(name, nm, bearing) {
+    const el = this.e.dest;
+    if (!name) { el.classList.add('hidden'); return; }
+    el.classList.remove('hidden');
+    el.innerHTML = `🎯 <b>${name}</b> &nbsp; ${nm.toFixed(nm < 100 ? 1 : 0)} nm &nbsp; brg ${String(Math.round(bearing)).padStart(3, '0')}°`;
   }
 
   update(fm, camLabel, dt) {

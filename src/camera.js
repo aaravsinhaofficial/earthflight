@@ -2,7 +2,7 @@
 import * as Cesium from 'cesium';
 import { damp } from './util.js';
 
-const MODES = ['chase', 'cockpit', 'orbit', 'flyby'];
+const MODES = ['chase', 'cockpit', 'orbit', 'flyby', 'top'];
 
 export class CameraRig {
   constructor(viewer) {
@@ -79,6 +79,17 @@ export class CameraRig {
       Cesium.Cartesian3.subtract(pos, this.flybyAnchor, this._dir);
       Cesium.Cartesian3.normalize(this._dir, this._dir);
       this._setView(this.flybyAnchor, this._dir, geoUp);
+      return;
+    }
+
+    if (this.mode === 'top') {
+      // straight-down map view, north = up. Nose direction is unambiguous here.
+      const enu = Cesium.Transforms.eastNorthUpToFixedFrame(pos);
+      const north = Cesium.Matrix4.getColumn(enu, 1, new Cesium.Cartesian3());
+      const dist = def.chase.back * 0.9 + 8;
+      Cesium.Cartesian3.add(pos, Cesium.Cartesian3.multiplyByScalar(geoUp, dist, this._tmp), this._eye);
+      Cesium.Cartesian3.negate(geoUp, this._dir);
+      this._setView(this._eye, this._dir, north);
       return;
     }
 

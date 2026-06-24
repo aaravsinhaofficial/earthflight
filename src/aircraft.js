@@ -21,10 +21,10 @@ export class Aircraft {
   // the Flightradar24 models use nose=+Y, up=+X, wings=+Z.
   _buildFix(axis) {
     if (axis === 'fr24') {
-      // After assimp's baked root transform, the exported models are
-      // X=up, Y=wing, Z=aft (nose at -Z). Re-map to Cesium's nose=+X, up=+Z:
-      //   model nose(-Z)→Cesium +X,  model up(+X)→Cesium +Z,  model +Y(wing)→+Y
-      const m3 = new Cesium.Matrix3(0, 0, -1, 0, 1, 0, 1, 0, 0);
+      // Determined empirically by top-down rendering: the exported models have
+      // nose on -X and "up" (dorsal) on +Z. Re-map to Cesium's nose=+X, up=+Z:
+      //   model nose(-X)→+X,  model up(+Z)→+Z  (a 180° turn about the up axis).
+      const m3 = new Cesium.Matrix3(-1, 0, 0, 0, -1, 0, 0, 0, 1);
       return Cesium.Matrix4.fromRotationTranslation(m3, Cesium.Cartesian3.ZERO);
     }
     return null; // identity
@@ -39,7 +39,7 @@ export class Aircraft {
       scale: def.scale,
       minimumPixelSize: def.minimumPixelSize,
       maximumScale: 20000,
-      shadows: Cesium.ShadowMode.ENABLED,
+      shadows: Cesium.ShadowMode.DISABLED, // shadows are GPU-heavy and crash-prone under memory pressure
       // start hidden until first placement to avoid a one-frame flash at (0,0,0)
       show: false,
     });
@@ -47,6 +47,64 @@ export class Aircraft {
     if (this.model) this.scene.primitives.remove(this.model);
     this.model = this.scene.primitives.add(model);
     this.ready = false;
+    this._surfReady = false;
+    this._surf = null;
+  }
+
+  // Capture the control-surface nodes + their rest transforms (once, after load).
+  _captureSurfaces() {
+    this._surfReady = true;
+    this._surf = [];
+    const cfg = this.def.surfaces;
+    if (!cfg) return;
+    for (const key in cfg) {
+      const s = cfg[key];
+      let node;
+      try { node = this.model.getNode(s.node); } catch { node = null; }
+      if (!node) continue;
+      const orig = Cesium.Matrix4.clone(node.originalMatrix || node.matrix);
+      // Rotate about the surface's true hinge: its geometric centre (pivot) on its
+      // longest axis (the span/hinge line). This keeps it attached to the airframe.
+      const piv = s.pivot ? new Cesium.Cartesian3(s.pivot[0], s.pivot[1], s.pivot[2]) : new Cesium.Cartesian3();
+      const Tp = Cesium.Matrix4.fromTranslation(piv);
+      const Tpn = Cesium.Matrix4.fromTranslation(Cesium.Cartesian3.negate(piv, new Cesium.Cartesian3()));
+      this._surf.push({ node, orig, s, Tp, Tpn,
+        m3: new Cesium.Matrix3(), a: new Cesium.Matrix4(), b: new Cesium.Matrix4(), c: new Cesium.Matrix4() });
+    }
+    // landing-gear nodes (shown when deployed, hidden when retracted)
+    this._gearNodes = [];
+    for (const name of (this.def.gearNodes || [])) {
+      let n; try { n = this.model.getNode(name); } catch { n = null; }
+      if (n) this._gearNodes.push(n);
+    }
+    this._gearShown = true;
+  }
+
+  // Deflect each surface: node.matrix = rest · T(pivot) · R(hingeAxis, angle) · T(-pivot).
+  _animateSurfaces(state) {
+    if (!this._surf || !state.surf) return;
+    const d = state.surf;
+    for (const it of this._surf) {
+      const drv = it.s.driver;
+      const val = drv === 'roll' ? d.aileron : drv === 'pitch' ? d.elevator
+                : drv === 'yaw' ? d.rudder : drv === 'flaps' ? d.flap : 0;
+      const angle = val * it.s.max * DEG * it.s.sign;
+      if (it.s.axis === 'x') Cesium.Matrix3.fromRotationX(angle, it.m3);
+      else if (it.s.axis === 'z') Cesium.Matrix3.fromRotationZ(angle, it.m3);
+      else Cesium.Matrix3.fromRotationY(angle, it.m3);
+      Cesium.Matrix4.fromRotationTranslation(it.m3, Cesium.Cartesian3.ZERO, it.a); // R
+      Cesium.Matrix4.multiply(it.Tp, it.a, it.b);    // T(p)·R
+      Cesium.Matrix4.multiply(it.b, it.Tpn, it.b);   // T(p)·R·T(-p)
+      it.node.matrix = Cesium.Matrix4.multiply(it.orig, it.b, it.c);
+    }
+    // gear: show once it's more than half deployed
+    if (this._gearNodes && this._gearNodes.length) {
+      const show = (state.gearPos ?? 1) > 0.5;
+      if (show !== this._gearShown) {
+        this._gearShown = show;
+        for (const n of this._gearNodes) n.show = show;
+      }
+    }
   }
 
   // state: FlightModel instance
@@ -78,6 +136,8 @@ export class Aircraft {
       this.model.modelMatrix = this.modelMatrix;
       if (!this.model.show) this.model.show = true;
       this.ready = true;
+      if (!this._surfReady) this._captureSurfaces();
+      this._animateSurfaces(state);
     }
   }
 

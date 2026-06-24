@@ -1,5 +1,4 @@
 // EarthFlight — entry point. Boots Cesium, builds the sim, runs the game loop.
-import * as Cesium from 'cesium';
 import { World } from './world.js';
 import { FlightModel } from './flightModel.js';
 import { Aircraft } from './aircraft.js';
@@ -8,8 +7,9 @@ import { Input } from './input.js';
 import { Hud } from './hud.js';
 import { Instruments } from './instruments.js';
 import { AudioEngine } from './audio.js';
+import { Effects } from './effects.js';
 import { UI } from './ui.js';
-import { AIRCRAFT, AIRPORTS, loadSettings, saveSettings } from './config.js';
+import { AIRCRAFT, AIRPORTS, ROUTES, airportById, DEFAULT_ION_TOKEN, DEFAULT_GOOGLE_KEY, loadSettings, saveSettings } from './config.js';
 
 const PHYS_DT = 1 / 120; // fixed physics timestep
 
@@ -23,9 +23,17 @@ class App {
     this._acc = 0;
     this._last = performance.now();
     this._crashTimer = 0;
+    this._crashing = false;
   }
 
   async init() {
+    // First run with a built-in ion token → default to 3D, and reflect it in the
+    // World menu so the user doesn't accidentally revert to plain satellite.
+    if (!this.settings.worldMode && DEFAULT_ION_TOKEN) {
+      this.settings.worldMode = 'ion';
+      this.settings.ionToken = this.settings.ionToken || DEFAULT_ION_TOKEN;
+    }
+
     this._setLoading('Spinning up the globe…', 15);
     this.world = new World('cesiumContainer');
 
@@ -36,6 +44,7 @@ class App {
     const acId = (this.settings.aircraft && AIRCRAFT[this.settings.aircraft]) ? this.settings.aircraft : 'pa28';
     this.fm = new FlightModel(AIRCRAFT[acId]);
     this.aircraft = new Aircraft(this.world.scene);
+    this.effects = new Effects(this.world.scene);
     await this.aircraft.load(AIRCRAFT[acId]);
 
     this.cam = new CameraRig(this.world.viewer);
@@ -68,10 +77,15 @@ class App {
     if (this.panelOn) document.getElementById('panel').classList.remove('hidden');
     setTimeout(() => document.getElementById('loading').classList.add('hidden'), 500);
 
-    // restore a richer world if the user had keys saved
-    const mode = this.settings.worldMode;
-    if (mode && mode !== 'satellite' && (this.settings.ionToken || this.settings.googleKey)) {
-      this.applyWorld(mode, { ionToken: this.settings.ionToken, googleKey: this.settings.googleKey })
+    // Load the richest world we have keys for. Default to ion (3D terrain + OSM
+    // buildings) when a token exists; Google 3D if a Google key is present.
+    const ionToken = this.settings.ionToken || DEFAULT_ION_TOKEN;
+    const googleKey = this.settings.googleKey || DEFAULT_GOOGLE_KEY;
+    const mode = this.settings.worldMode || (googleKey ? 'google' : ionToken ? 'ion' : 'satellite');
+    if (mode !== 'satellite' && (ionToken || googleKey)) {
+      this._setLoading('Loading 3D terrain & buildings…', 100);
+      this.applyWorld(mode, { ionToken, googleKey })
+        .then((m) => this._toast(m === 'ion' ? '🏙 3D terrain + buildings on' : m === 'google' ? '🌍 Google 3D on' : ''))
         .catch(() => {});
     }
 
@@ -112,7 +126,19 @@ class App {
 
     if (!this.paused) {
       const c = this.fm.cartographicDeg;
-      const ground = this.world.sampleGround(c.lon, c.lat, this.fieldElev);
+      let ground;
+      if (this.runway) {
+        // Lock the runway to a single flat elevation, converged from terrain at
+        // the (fixed) spawn point so it matches the scenery without bouncing.
+        const sampled = this.world.sampleGround(this.runway.lon, this.runway.lat, this.runway.elev);
+        this.runway.elev = this.runway.elev * 0.9 + sampled * 0.1;
+        const dN = (c.lat - this.runway.lat) * 111320;
+        const dE = (c.lon - this.runway.lon) * 111320 * Math.cos(this.runway.lat * Math.PI / 180);
+        if (Math.hypot(dN, dE) < 5000) ground = this.runway.elev;     // flat runway zone
+        else { this.runway = null; ground = this.world.sampleGround(c.lon, c.lat, this.fieldElev); }
+      } else {
+        ground = this.world.sampleGround(c.lon, c.lat, this.fieldElev);
+      }
       const env = { terrainHeight: ground };
 
       this._acc += dt;
@@ -123,26 +149,51 @@ class App {
         steps++;
       }
 
-      if (this.fm.crashed) this._handleCrash();
+      if (this.fm.crashed && !this._crashing) this._handleCrash();
     }
 
     this.aircraft.update(this.fm);
-    this.aircraft.setVisible(this.cam.mode !== 'cockpit');
+    this.aircraft.setVisible(!this._crashing && this.cam.mode !== 'cockpit');
     this.cam.update(dt, this.aircraft, this.fm);
     this.hud.update(this.fm, this.cam.modeLabel, dt);
+    if (this.destination) {
+      const di = this._destInfo();
+      this.hud.updateDest(this.destination.name, di.nm, di.bearing);
+      if (!this._arrived && di.km < 8 && this.fm.agl < 1500) {
+        this._arrived = true;
+        this._toast(`🛬 Arrived at ${this.destination.name}! Nice flying.`);
+      }
+    } else {
+      this.hud.updateDest(null);
+    }
     this.instruments.update(this.fm);
     this.audio.update(this.fm);
+    this.effects.update(dt);
   }
 
+  // Crash → fireball at the wreck, freeze, then force a reset.
   _handleCrash() {
+    this._crashing = true;
     this.fm.crashed = false;
-    if (this.fm.verticalSpeed < -12 || this.fm.V > this.fm.ac.vne) {
-      this._toast('💥 Hard crash — respawning at start');
+    const size = Math.max(5, Math.cbrt(this.fm.ac.mass) * 0.5);
+    this.effects.explode(this.aircraft.position, size);
+    this.aircraft.setVisible(false);
+    this.audio.update?.(this.fm);
+    this._banner('💥 CRASHED', 'resetting…');
+    this.paused = true;
+    setTimeout(() => {
       this.resetPosition();
-    } else {
-      // firm but survivable: just kill vertical energy
-      this.fm.verticalSpeed = 0;
-    }
+      this.paused = false;
+      this._crashing = false;
+      this._banner();
+    }, 3000);
+  }
+
+  _banner(title, sub) {
+    let el = document.getElementById('crashBanner');
+    if (!title) { if (el) el.remove(); return; }
+    if (!el) { el = document.createElement('div'); el.id = 'crashBanner'; document.body.appendChild(el); }
+    el.innerHTML = `<div class="cb-title">${title}</div><div class="cb-sub">${sub || ''}</div>`;
   }
 
   // ── commands from UI/input ───────────────────────────────────────────────
@@ -155,11 +206,41 @@ class App {
       heading: ap.hdg, airborne: ap.airborne,
     });
     this.world.resetGroundSample(ap.airborne ? null : ap.elev);
-    if (ap.airborne) this.world.hideRunway();
-    else this.world.showRunway(ap.lon, ap.lat, ap.hdg);
+    this.destination = null; this.world.hideRoute(); // clear any active route (setRoute re-adds after)
+    if (ap.airborne) { this.world.hideRunway(); this.runway = null; }
+    else {
+      this.world.showRunway(ap.lon, ap.lat, ap.hdg);
+      // A flat runway zone: ground contact uses ONE locked elevation near the
+      // airport instead of bumpy per-point terrain, so takeoff is smooth and the
+      // plane isn't shoved around or forced back down while climbing out.
+      this.runway = { lon: ap.lon, lat: ap.lat, elev: ap.elev };
+    }
     this.cam.smoothEye = null;
     this.settings.lastAirport = ap.id; saveSettings(this.settings);
     this._toast(`📍 ${ap.name}`);
+  }
+
+  setRoute(route) {
+    const from = airportById(route.from), to = airportById(route.to);
+    if (!from || !to) return;
+    this.spawnAirport(from);                 // spawn on the origin runway (clears old route)
+    this.destination = { name: to.name, lat: to.lat, lon: to.lon, elev: to.elev };
+    this._arrived = false;
+    this.world.showRoute(from.lat, from.lon, to.lat, to.lon, to.name);
+    this._toast(`🧭 ${route.name} — fly to ${to.name}`);
+  }
+
+  // distance (nm) + bearing (deg) from the aircraft to the destination
+  _destInfo() {
+    const c = this.fm.cartographicDeg, d = this.destination;
+    const D = Math.PI / 180;
+    const φ1 = c.lat * D, φ2 = d.lat * D, dφ = (d.lat - c.lat) * D, dλ = (d.lon - c.lon) * D;
+    const a = Math.sin(dφ / 2) ** 2 + Math.cos(φ1) * Math.cos(φ2) * Math.sin(dλ / 2) ** 2;
+    const km = 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    const y = Math.sin(dλ) * Math.cos(φ2);
+    const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(dλ);
+    const brg = ((Math.atan2(y, x) / D) + 360) % 360;
+    return { km, nm: km * 0.539957, bearing: brg };
   }
 
   gotoLocation(lat, lon, height) {
@@ -226,4 +307,3 @@ app.init().catch((e) => {
   if (t) t.textContent = 'Failed to start: ' + (e?.message || e);
 });
 window.app = app; // handy for debugging in the console
-window.Cesium = Cesium;

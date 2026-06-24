@@ -36,6 +36,8 @@
       <div class="hud-row"><span class="lbl">AOA</span><span id="hudAoa" class="val">0</span><span class="unit">°</span></div>
       <div class="hud-row"><span class="lbl">G</span><span id="hudG" class="val">1.0</span></div>
     </div>
+    <!-- destination / route readout -->
+    <div id="hudDest" class="hud-dest hidden"></div>
     <!-- center reticle + warnings -->
     <div class="hud-center">
       <div id="stallWarn" class="warn hidden">STALL</div>
@@ -70,7 +72,7 @@
   <!-- Top toolbar -->
   <div id="toolbar" class="toolbar hidden">
     <button class="tb-btn" id="btnMenu" title="Menu (Esc)">☰</button>
-    <div class="tb-title">✈ EarthFlight</div>
+    <div class="tb-title">✈ EarthFlight <span id="buildTag" style="color:#38e1ff;font-size:11px;font-weight:600;">BUILD 16</span></div>
     <div class="tb-spacer"></div>
     <div class="tb-coords" id="tbCoords">—</div>
     <button class="tb-btn" id="btnPanel" title="Toggle instrument panel (P)">🎛</button>
@@ -95,6 +97,8 @@
       <div class="menu-body">
         <!-- FLY TAB -->
         <section class="tab active" data-tab="fly">
+          <h3>Routes (start on the runway, fly to the destination)</h3>
+          <div id="routeList" class="route-list"></div>
           <h3>Start at an airport</h3>
           <div id="airportList" class="airport-list"></div>
           <h3>Fly to coordinates / city</h3>

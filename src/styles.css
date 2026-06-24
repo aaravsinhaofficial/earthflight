@@ -52,6 +52,12 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #000; color:
 .hud-tr .hud-row .val { text-align: right; }
 .hud-row .unit { font-size: 10px; color: var(--muted); }
 
+.hud-dest { position: absolute; top: 58px; left: 50%; transform: translateX(-50%);
+  padding: 7px 16px; border-radius: 20px; font-family: ui-monospace, monospace; font-size: 13px;
+  background: var(--panel); border: 1px solid var(--accent); color: var(--text);
+  backdrop-filter: blur(8px); box-shadow: 0 6px 24px rgba(0,0,0,.4); white-space: nowrap; }
+.hud-dest b { color: var(--accent); }
+
 .hud-center { position: absolute; top: 42%; left: 0; right: 0; text-align: center; }
 .warn { display: inline-block; font-size: 26px; font-weight: 800; letter-spacing: 4px;
   color: var(--warn); text-shadow: 0 0 18px rgba(255,75,75,.8); }
@@ -109,6 +115,13 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #000; color:
 .airport .nm { flex: 1; font-size: 13px; }
 .airport .id { font-family: ui-monospace, monospace; font-size: 11px; color: var(--muted); }
 
+.route-list { display: grid; gap: 6px; margin-bottom: 6px; }
+.route { display: flex; align-items: center; gap: 10px; padding: 9px 12px; cursor: pointer;
+  border-radius: 10px; border: 1px solid var(--panel-line); background: rgba(56,225,255,0.04); color: var(--text); text-align: left; }
+.route:hover { border-color: var(--accent); background: rgba(56,225,255,0.1); }
+.route .nm { flex: 1; font-size: 13px; font-weight: 600; }
+.route .note { font-size: 11px; color: var(--muted); }
+
 .aircraft-list { display: grid; gap: 8px; }
 .aircraft-card { text-align: left; padding: 12px 14px; border-radius: 12px; cursor: pointer;
   border: 1px solid var(--panel-line); background: rgba(255,255,255,0.03); color: var(--text); }
@@ -156,6 +169,14 @@ kbd { font-family: ui-monospace, monospace; font-size: 11px; padding: 3px 7px; b
   background: var(--panel); border: 1px solid var(--panel-line); color: #fff; backdrop-filter: blur(8px);
   opacity: 0; transform: translateY(10px); transition: .35s; box-shadow: 0 8px 28px rgba(0,0,0,.4); }
 .toast-item.show { opacity: 1; transform: translateY(0); }
+
+/* ───────── Crash banner ───────── */
+#crashBanner { position: fixed; inset: 0; z-index: 250; display: grid; place-items: center;
+  pointer-events: none; background: radial-gradient(circle, rgba(120,20,0,0.25), rgba(0,0,0,0.45)); }
+.cb-title { font-size: 64px; font-weight: 900; letter-spacing: 6px; color: #ff5a3c;
+  text-shadow: 0 0 30px rgba(255,60,20,0.9), 0 4px 12px rgba(0,0,0,0.8); animation: cbpulse 0.5s ease-in-out infinite alternate; }
+.cb-sub { text-align: center; color: #ffd; font-size: 16px; letter-spacing: 3px; margin-top: 6px; text-transform: uppercase; }
+@keyframes cbpulse { from { transform: scale(1); } to { transform: scale(1.06); } }
 
 @media (max-width: 760px) {
   .gauge { width: 70px; height: 70px; }
