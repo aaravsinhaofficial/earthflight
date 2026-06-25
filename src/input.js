@@ -2,7 +2,7 @@
 // (pitch/roll/yaw, each -1..1) and fires discrete action callbacks.
 import { clamp, damp } from './util.js';
 
-const DEADZONE = 0.12;
+const DEADZONE = 0.16;
 const dz = (v) => (Math.abs(v) < DEADZONE ? 0 : v);
 
 export class Input {
@@ -39,7 +39,7 @@ export class Input {
     if (this._typingInField(e)) return;
     const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
     // prevent page scroll on the flight keys
-    if ([' ', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) e.preventDefault();
+    if ([' ', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(e.key)) e.preventDefault();
     if (this.keys.has(k)) return;    // ignore auto-repeat for discrete actions
     this.keys.add(k);
 
@@ -58,6 +58,14 @@ export class Input {
       case 'Escape': a.onMenu?.(); break;
       case 'h': a.onHelp?.(); break;
       case 'b': a.onBrake?.(true); break;
+      case 'l': a.onLandingMode?.(); break;
+      case 'y': a.onApNav?.(); break;
+      case 'o': a.onApSpd?.(); break;
+      case '0': a.onApSync?.(); break;
+      case 'Home': a.onApAlt?.(+1); break;
+      case 'End': a.onApAlt?.(-1); break;
+      case 'PageUp': a.onApHdg?.(+1); break;
+      case 'PageDown': a.onApHdg?.(-1); break;
     }
   }
 
@@ -89,13 +97,19 @@ export class Input {
     // ---- gamepad ----
     const pad = this._poll();
     if (pad) {
-      // calibrate the resting position once, then subtract it (kills stick drift)
       if (!this._padOffsets) this._padOffsets = (pad.axes || []).slice(0, 4);
+      // Continuously recalibrate the resting centre: whenever an axis sits near
+      // its current centre, slowly track it — this removes joystick/gamepad drift
+      // without fading deliberate, held deflections.
+      for (let i = 0; i < 4; i++) {
+        const raw = pad.axes[i] ?? 0;
+        if (Math.abs(raw - this._padOffsets[i]) < 0.2) this._padOffsets[i] = this._padOffsets[i] * 0.96 + raw * 0.04;
+      }
       const ax = (i) => (pad.axes[i] ?? 0) - (this._padOffsets[i] ?? 0);
-      // only start reading axes once the user deliberately moves a stick or
-      // presses a button — a quietly-connected, drifting controller stays inert
+      // engage only on a clearly deliberate input (a real deflection or a button),
+      // so a quietly-connected, drifting controller never moves the plane
       if (!this._padEngaged) {
-        const moved = [0, 1, 2, 3].some((i) => Math.abs(ax(i)) > 0.4);
+        const moved = [0, 1, 2, 3].some((i) => Math.abs(ax(i)) > 0.55);
         const pressed = pad.buttons.some((b) => b.pressed);
         if (moved || pressed) this._padEngaged = true;
       }

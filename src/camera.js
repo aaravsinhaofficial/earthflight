@@ -2,7 +2,7 @@
 import * as Cesium from 'cesium';
 import { damp } from './util.js';
 
-const MODES = ['chase', 'cockpit', 'orbit', 'flyby', 'top'];
+const MODES = ['chase', 'cockpit', 'hud', 'orbit', 'flyby', 'top'];
 
 export class CameraRig {
   constructor(viewer) {
@@ -41,7 +41,7 @@ export class CameraRig {
     const geoUp = Cesium.Ellipsoid.WGS84.geodeticSurfaceNormal(pos, new Cesium.Cartesian3());
     const def = aircraft.def;
 
-    if (this.mode === 'cockpit') {
+    if (this.mode === 'cockpit' || this.mode === 'hud') {
       // eye just behind the nose, looking forward along the fuselage
       aircraft.bodyPointToWorld(def.cockpit.forward, 0, def.cockpit.up, this._eye);
       Cesium.Cartesian3.clone(this._fwd, this._dir);

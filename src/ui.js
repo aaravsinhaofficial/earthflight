@@ -111,9 +111,22 @@ export class UI {
       $('timeLabel').textContent = `${String(Math.floor(h)).padStart(2, '0')}:${String(Math.floor((h % 1) * 60)).padStart(2, '0')} (sun position)`;
       this.s.time = h; saveSettings(this.s);
     };
+    $('volSlider').oninput = (e) => {
+      const v = parseInt(e.target.value);
+      this.app.setVolume(v / 100);
+      $('volLabel').textContent = v === 0 ? 'Muted' : `Engine, wind & warnings — ${v}%`;
+      this.s.volume = v / 100; saveSettings(this.s);
+    };
     this._seg('qualitySeg', 'q', (q) => { this.app.setQuality(q); this.s.quality = q; saveSettings(this.s); });
     this._seg('worldSeg', 'w', (w) => { this.s.worldMode = w; saveSettings(this.s); });
     $('btnApplyWorld').onclick = () => this._applyWorld();
+
+    // weather toggle
+    $('realWeather').onchange = (e) => {
+      this.s.realWeather = e.target.checked; saveSettings(this.s);
+      const c = this.app.fm.cartographicDeg; this.app.fetchWeather(c.lat, c.lon);
+      if (!e.target.checked) document.getElementById('hudWx')?.classList.add('hidden');
+    };
 
     // controls tab
     $('invertY').onchange = (e) => { this.app.setInvertY(e.target.checked); this.s.invertY = e.target.checked; saveSettings(this.s); };
@@ -139,12 +152,13 @@ export class UI {
     try {
       const applied = await this.app.applyWorld(mode, { ionToken, googleKey });
       const msg = {
-        google: '✅ Google photorealistic 3D tiles active.',
-        ion: '✅ Cesium ion terrain + 3D buildings active.',
-        satellite: '✅ Free satellite imagery + terrain active.',
+        google: '✅ Photorealistic 3D — real textured Google-Earth buildings.',
+        ion: '✅ Cesium ion terrain + OSM 3D building shapes.',
+        satellite: '✅ Free satellite imagery + terrain (no 3D buildings).',
       };
+      if (applied !== mode) this.syncWorldMode(applied);   // persist + reflect the fallback
       $('worldStatus').textContent = (applied !== mode)
-        ? `⚠ Couldn't load "${mode}" (check the key) — fell back to ${applied}.`
+        ? `⚠ Couldn't load "${mode}" — fell back to ${applied}. (ion token may be over quota.)`
         : msg[applied];
     } catch (e) {
       $('worldStatus').textContent = '⚠ ' + (e?.message || 'World failed to load.');
@@ -182,6 +196,12 @@ export class UI {
     if (s.ionToken) $('ionToken').value = s.ionToken;
     if (s.googleKey) $('googleKey').value = s.googleKey;
     if (s.invertY) $('invertY').checked = true;
+    if (s.volume != null) {
+      const v = Math.round(s.volume * 100);
+      $('volSlider').value = v;
+      $('volLabel').textContent = v === 0 ? 'Muted' : `Engine, wind & warnings — ${v}%`;
+    }
+    if (s.realWeather === false) $('realWeather').checked = false;
     if (s.sensitivity) $('sensSlider').value = s.sensitivity;
   }
 
@@ -189,10 +209,42 @@ export class UI {
     $(id).querySelectorAll('button').forEach(b => b.classList.toggle('active', b.dataset[attr] === val));
   }
 
-  // ---- open/close ----
-  toggleMenu() { $('menu').classList.toggle('hidden'); }
-  closeMenu() { $('menu').classList.add('hidden'); }
-  openMenu() { $('menu').classList.remove('hidden'); }
+  // Reflect a world-mode change that didn't originate from the segment buttons
+  // (e.g. an automatic photoreal→fallback) in both the saved settings and the UI.
+  syncWorldMode(mode) {
+    this.s.worldMode = mode; saveSettings(this.s);
+    this._segSelect('worldSeg', 'w', mode);
+  }
+
+  syncTime(sliderVal, localHour) {
+    const sl = document.getElementById('timeSlider'); if (sl) sl.value = sliderVal;
+    const lbl = document.getElementById('timeLabel');
+    if (lbl) lbl.textContent = `${String(Math.floor(localHour)).padStart(2, '0')}:${String(Math.floor((localHour % 1) * 60)).padStart(2, '0')} — real local time`;
+    this.s.time = sliderVal; saveSettings(this.s);
+  }
+
+  showWeather(w) {
+    const el = document.getElementById('hudWx');
+    if (!el || !w) return;
+    const ktw = Math.round((w.windSpeed || 0) * 1.94384);
+    el.classList.remove('hidden');
+    el.innerHTML = `${this._wxIcon(w.code)} ${Math.round(w.temp)}°C &nbsp; 🌬 ${String(Math.round(w.windDir)).padStart(3, '0')}°/${ktw}kt`;
+    const s = document.getElementById('wxStatus');
+    if (s) s.textContent = `Now: ${this._wxText(w.code)}, ${Math.round(w.cloud)}% cloud, wind ${ktw} kt from ${Math.round(w.windDir)}°.`;
+  }
+  _wxIcon(c) {
+    if ([45, 48].includes(c)) return '🌫'; if (c >= 95) return '⛈'; if (c >= 80) return '🌦';
+    if (c >= 71 && c <= 77) return '❄️'; if (c >= 51 && c <= 67) return '🌧'; if (c >= 1 && c <= 3) return '⛅'; return '☀️';
+  }
+  _wxText(c) {
+    if ([45, 48].includes(c)) return 'fog'; if (c >= 95) return 'thunderstorm'; if (c >= 80) return 'showers';
+    if (c >= 71 && c <= 77) return 'snow'; if (c >= 51 && c <= 67) return 'rain'; if (c >= 1 && c <= 3) return 'partly cloudy'; return 'clear';
+  }
+
+  // ---- open/close ---- (the menu is also the pause menu: see App._syncMenuPause)
+  toggleMenu() { $('menu').classList.toggle('hidden'); this.app._syncMenuPause(!$('menu').classList.contains('hidden')); }
+  closeMenu() { $('menu').classList.add('hidden'); this.app._syncMenuPause(false); }
+  openMenu() { $('menu').classList.remove('hidden'); this.app._syncMenuPause(true); }
   toggleHelp() { $('help').classList.toggle('hidden'); }
   closeHelp() { $('help').classList.add('hidden'); }
 

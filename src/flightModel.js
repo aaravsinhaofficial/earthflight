@@ -55,6 +55,8 @@ function matFromQ(q) {                            // 3x3 rows; columns are body 
 }
 const matVec = (R,v) => [R[0][0]*v[0]+R[0][1]*v[1]+R[0][2]*v[2], R[1][0]*v[0]+R[1][1]*v[1]+R[1][2]*v[2], R[2][0]*v[0]+R[2][1]*v[1]+R[2][2]*v[2]];
 const matTVec = (R,v) => [R[0][0]*v[0]+R[1][0]*v[1]+R[2][0]*v[2], R[0][1]*v[0]+R[1][1]*v[1]+R[2][1]*v[2], R[0][2]*v[0]+R[1][2]*v[1]+R[2][2]*v[2]];
+// linear rate-limit: step `c` toward `t` by at most `s` (constant-rate servo travel)
+const moveTo = (c, t, s) => (c < t ? Math.min(c + s, t) : Math.max(c - s, t));
 
 export class FlightModel {
   constructor(aircraft) {
@@ -71,7 +73,47 @@ export class FlightModel {
     this.I = [ac.Ixx || ac.mass * 2, ac.Iyy || ac.mass * 3, ac.Izz || ac.mass * 4];
     this.alphaStall = (ac.clMax - ac.cl0) / ac.clAlpha;
     this.vRotate = ac.stallSpeed * 1.12;
+
+    // Landing-gear oleo (spring-damper), derived from weight so the cushion feels
+    // consistent across aircraft. k & c scale with weight so the strut's natural
+    // frequency stays ~8–18 rad/s — rock-solid under explicit Euler at dt=1/120.
+    const weight = ac.mass * G;
+    this._gearTravel = clamp(0.10 + ac.mass / 320000 * 0.40, 0.10, 0.55); // strut stroke (m)
+    this._gearK = weight / (0.30 * this._gearTravel);                     // static sag ≈ 30% of travel
+    this._gearC = 2 * 0.72 * Math.sqrt(this._gearK * ac.mass);            // ζ≈0.72 on compression
+
+    // ── MSFS-style control schedules (real detents / limits / response) ──
+    const heavy = ac.mass > 20000;
+    // Flap DETENTS: each a real handle position {deg, label, vfe(m/s)}. Default to a
+    // simple 0/full pair if an aircraft has no schedule yet.
+    this.flapDetents = (ac.flaps && ac.flaps.length)
+      ? ac.flaps
+      : [{ deg: 0, label: '0', vfe: Infinity }, { deg: 40, label: 'FULL', vfe: ac.vne * 0.6 }];
+    this.flapDegMax = Math.max(1, ...this.flapDetents.map(d => d.deg));
+    this.flapTransitSec = ac.flapTransit || (heavy ? 15 : 5);   // 0 → FULL travel time
+    // Landing gear transit + speed limits (m/s). ?? keeps an explicit 0 (fixed gear).
+    this.gearTransitSec = ac.gearTransit ?? (heavy ? 10 : 5);
+    this.fixedGear = !!ac.fixedGear || this.gearTransitSec <= 0; // e.g. PA-28 (non-retractable)
+    this.gearVle = ac.gearVle || ac.vne;                        // max gear-extended speed
+    this.gearVlo = ac.gearVlo || this.gearVle;                  // max gear-operating speed
+    // Control-surface servo: full travel per second (heavies move a touch slower)
+    this.surfaceRate = ac.surfaceRate || (heavy ? 3.0 : 12.0);
+    // Engine response: turbofans spool slowly & asymmetrically; pistons ~instant
+    this.engineType = ac.engine || (ac.maxThrust > 20000 ? 'turbofan' : 'piston');
+    this.spoolUpTau = ac.spoolUp || (this.engineType === 'turbofan' ? 4.5 : 0.5);
+    this.spoolDownTau = ac.spoolDown || (this.engineType === 'turbofan' ? 2.2 : 0.4);
+    // Powerplant model: a PROP makes thrust from engine power + disk area (lots of
+    // thrust slow, little fast); a JET delivers rated static thrust that lapses with
+    // density & Mach. Oswald e drives induced drag (was hardcoded 0.8). MMO = Mach limit.
+    this.oswaldE = ac.oswaldE || 0.80;
+    this.ratedPower = ac.power || 0;                                   // W (prop); 0 ⇒ jet
+    this.propArea = ac.propDiam ? Math.PI * ac.propDiam * ac.propDiam / 4 : 0;
+    this.mmo = ac.mmo || 0;
   }
+
+  // VFE (max-flap-extended speed, m/s) for the currently-selected detent
+  flapVfe() { return this.flapDetents?.[this.flapIndex]?.vfe ?? Infinity; }
+  get flapLabel() { return this.flapDetents?.[this.flapIndex]?.label ?? '0'; }
 
   reset({ lon, lat, height, heading, airborne }) {
     this.lon = lon * DEG; this.lat = lat * DEG; this.height = height;
@@ -88,15 +130,22 @@ export class FlightModel {
     this.uvw = [V0, 0, 0];                              // body velocity
     this.trim = 0;
     this.throttle = airborne ? 0.6 : 0;
-    this.flaps = 0; this.gearDown = true; this.gearPos = 1; // 0=up, 1=down (animated)
+    this.thrustFrac = this.throttle;                   // actual delivered thrust (spools toward throttle)
+    this.flapIndex = 0; this.flapDeg = 0; this.flaps = 0; // flap detent index / commanded ° / normalized
+    this.flapOverspeed = false; this.gearOverspeed = false;
+    this.gearDown = true; this.gearPos = 1;            // 0=up, 1=down (animated)
     this.parkingBrake = !airborne; this.wheelBrake = false; this.autopilotLevel = false;
     this.surf = { elevator: 0, aileron: 0, rudder: 0, flap: 0 };  // actual deflections (-1..1)
     this.onGround = !airborne;
     this.terrainHeight = airborne ? height - 500 : height - this.ac.wheelHeight;
-    this.V = V0; this.alpha = theta; this.beta = 0;
+    if (!this.wind) this.wind = { n: 0, e: 0, d: 0 }; // NED wind (m/s), set by weather
+    this.V = V0; this.ias = V0; this.mach = 0; this.overspeed = false; this.alpha = theta; this.beta = 0;
     this.verticalSpeed = 0; this.groundSpeed = V0;
     this.loadFactor = 1; this.stalled = false; this.crashed = false;
     this._euler = { psi, theta, phi };
+    // landing-scorer / cushioned-touchdown state
+    this._inContact = false; this._touchCount = 0; this._settleT = 0; this._gearLoad = 0;
+    this.lastTouchdown = null; this.justLanded = false;
   }
 
   update(dt, controls, env) {
@@ -108,16 +157,41 @@ export class FlightModel {
     const weight = ac.mass * G;
     const rho = airDensity(this.height);
 
-    // ── control-surface dynamics (rate-limited servo travel; drives visuals) ──
+    // ── control-surface dynamics (constant-rate servo travel; drives visuals) ──
+    // Real surfaces slew at a fixed rate (not exponential easing); control AUTHORITY
+    // still scales with dynamic pressure later in the moment build-up.
     const elevCmd = clamp((controls.pitch + this.trim), -1, 1);
     const ailCmd = clamp(controls.roll, -1, 1);
     const rudCmd = clamp(controls.yaw, -1, 1);
-    const srate = 4.0; // ~0.25s full travel
-    this.surf.elevator = damp(this.surf.elevator, elevCmd, srate, dt);
-    this.surf.aileron = damp(this.surf.aileron, ailCmd, srate, dt);
-    this.surf.rudder = damp(this.surf.rudder, rudCmd, srate, dt);
-    this.surf.flap = damp(this.surf.flap, this.flaps, 1.2, dt);
-    this.gearPos = damp(this.gearPos, this.gearDown ? 1 : 0, 0.7, dt); // ~3.5s gear cycle
+    const sStep = this.surfaceRate * dt;
+    this.surf.elevator = moveTo(this.surf.elevator, elevCmd, sStep);
+    this.surf.aileron = moveTo(this.surf.aileron, ailCmd, sStep);
+    this.surf.rudder = moveTo(this.surf.rudder, rudCmd, sStep);
+    // Flaps move at constant rate toward the commanded notch — BUT real flaps can't
+    // extend against too much air load. Above VFE: freeze further extension, and let
+    // air-load "blow back" any excess toward a speed-safe deflection (MSFS-like).
+    // VFE/VLE are INDICATED-airspeed limits → compare IAS, not TAS (matters at altitude).
+    const vfe = this.flapVfe(), spd = this.V * Math.sqrt(rho / RHO0);
+    let flapTgt = this.flaps;
+    if (spd > vfe && flapTgt > this.surf.flap) flapTgt = this.surf.flap;    // no extension over VFE
+    this.surf.flap = moveTo(this.surf.flap, flapTgt, dt / this.flapTransitSec);
+    if (spd > vfe && this.surf.flap > 0) {
+      const allow = clamp(1 - (spd - vfe) / (0.25 * vfe), 0, 1);            // blow back
+      if (this.surf.flap > allow) this.surf.flap = moveTo(this.surf.flap, allow, 2 * dt / this.flapTransitSec);
+    }
+    // Gear: fixed gear is welded down; otherwise transit at a constant rate.
+    if (this.fixedGear) { this.gearDown = true; this.gearPos = 1; }
+    else this.gearPos = moveTo(this.gearPos, this.gearDown ? 1 : 0, dt / this.gearTransitSec);
+    // Overspeed flags (mirror MSFS placard warnings): surface deployed AND too fast.
+    this.flapOverspeed = this.surf.flap > 0.02 && spd > vfe;
+    this.gearOverspeed = !this.fixedGear && this.gearPos > 0.02 && spd > this.gearVle;
+
+    // Gentle hands-off ATTITUDE hold: when you're not touching pitch, lightly damp
+    // the pitch rate so the plane holds whatever attitude you set — it stops the
+    // slow drift/wandering but does NOT fight a climb or descent you've trimmed in.
+    if (!this.onGround && Math.abs(controls.pitch) < 0.04 && this.V > this.ac.stallSpeed * 1.1) {
+      this.trim = clamp(this.trim - this.q_rate * 0.22 * dt, -0.55, 0.55);
+    }
 
     // ── current airspeed / flow angles ──
     let [u, v, w] = this.uvw;
@@ -126,20 +200,50 @@ export class FlightModel {
     this.alpha = Math.atan2(w, Math.max(u, 0.1));
     this.beta = Math.asin(clamp(v / Vsafe, -1, 1));
     const qbar = 0.5 * rho * V * V;
-    const thrust = this.throttle * ac.maxThrust * (rho / RHO0);
+    // Indicated airspeed (what the ASI reads & what V-speed/placard limits are in)
+    // and true Mach (from ISA temperature) — used for limits, lapse and wave drag.
+    this.ias = V * Math.sqrt(rho / RHO0);
+    const Tisa = Math.max(216.65, 288.15 - 0.0065 * this.height);
+    this.mach = V / Math.sqrt(1.4 * 287 * Tisa);
+
+    // Engine response: thrust lags commanded throttle (turbofans spool slowly and
+    // asymmetrically; pistons ~instant).
+    const spoolTau = this.thrustFrac < this.throttle ? this.spoolUpTau : this.spoolDownTau;
+    this.thrustFrac = damp(this.thrustFrac, this.throttle, 1 / spoolTau, dt);
+    let thrust;
+    if (this.ratedPower > 0) {
+      // PROPELLER (momentum theory): static thrust T0 from power & disk, then a 1/V
+      // lapse above the crossover. Power lapses with density (naturally aspirated).
+      const Pav = this.thrustFrac * this.ratedPower * (rho / RHO0);
+      const T0 = Math.cbrt(2 * rho * this.propArea) * Math.pow(0.85 * Pav, 2 / 3);
+      thrust = Math.min(T0, 0.80 * Pav / Math.max(V, 1));
+    } else {
+      // TURBOFAN: rated static thrust, lapsing with density^0.8 and a small Mach loss.
+      thrust = this.thrustFrac * ac.maxThrust * Math.pow(rho / RHO0, 0.8) * Math.max(0.3, 1 - 0.15 * this.mach);
+    }
 
     // ── lift coefficient with smooth stall ──
-    let CL = ac.cl0 + ac.clAlpha * this.alpha + ac.flapClBonus * this.surf.flap;
-    this.stalled = !this.onGround && Math.abs(this.alpha) > this.alphaStall;
-    if (Math.abs(this.alpha) > this.alphaStall) {
-      const over = Math.abs(this.alpha) - this.alphaStall;
+    // Real flaps: lift rises concavely (early notches add lift cheaply), drag rises
+    // convexly (last notches are mostly drag), and the stall AoA drops a couple deg.
+    const fL = Math.pow(this.surf.flap, 0.75);          // lift shape
+    const fD = this.surf.flap * this.surf.flap;          // drag shape (f^2)
+    const alphaStallEff = this.alphaStall - 2 * DEG * this.surf.flap;
+    let CL = ac.cl0 + ac.clAlpha * this.alpha + ac.flapClBonus * fL;
+    this.stalled = !this.onGround && Math.abs(this.alpha) > alphaStallEff;
+    if (Math.abs(this.alpha) > alphaStallEff) {
+      const over = Math.abs(this.alpha) - alphaStallEff;
       const decay = Math.max(0.35, 1 - over * 2.5);
-      CL = Math.sign(this.alpha) * (ac.cl0 + ac.clAlpha * this.alphaStall) * decay;
+      CL = Math.sign(this.alpha) * (ac.cl0 + ac.clAlpha * alphaStallEff + ac.flapClBonus * fL) * decay;
     }
     CL += D.CLq * (this.q_rate * c / (2 * Vsafe));
-    const CD = ac.cd0 + (CL * CL) / (Math.PI * 0.8 * this.AR)
-             + ac.flapDrag * this.surf.flap + ac.gearDrag * this.gearPos
-             + (this.stalled ? 0.06 : 0);
+    // flap/gear over their placard speed adds extra parasitic drag (overspeed penalty)
+    const overDrag = (this.flapOverspeed ? ac.flapDrag * 1.2 * (V - this.flapVfe()) / this.flapVfe() * this.surf.flap : 0)
+                   + (this.gearOverspeed ? ac.gearDrag * 1.0 * (V - this.gearVle) / this.gearVle * this.gearPos : 0);
+    // transonic wave drag (jets only): rises steeply past the critical Mach
+    const cdWave = (this.ratedPower === 0 && this.mach > 0.78) ? 20 * Math.pow(this.mach - 0.78, 4) : 0;
+    const CD = ac.cd0 + (CL * CL) / (Math.PI * this.oswaldE * this.AR)
+             + ac.flapDrag * fD + ac.gearDrag * this.gearPos
+             + cdWave + overDrag + (this.stalled ? 0.06 : 0);
     const CY = D.CYbeta * this.beta + D.CYdr * (D.Cndr > 0 ? this.surf.rudder : 0);
 
     const lift = qbar * S * CL;
@@ -150,15 +254,22 @@ export class FlightModel {
       // ───────────────── GROUND: constrained, always stable ─────────────────
       this.height = groundH;
       let e = this._euler;
-      const rollResist = 0.025 + (this.wheelBrake ? 0.4 : 0) + (this.parkingBrake ? 0.9 : 0);
+      const rollResist = 0.035 + (this.wheelBrake ? 0.45 : 0) + (this.parkingBrake ? 1.0 : 0);
       const along = thrust - drag - Math.sign(V) * rollResist * weight;
       V = Math.max(0, V + (along / ac.mass) * dt);
       if ((this.parkingBrake || this.wheelBrake) && V < 0.3) V = 0;
-      // nosewheel/rudder steering scales with speed
-      const steer = rudCmd * 0.5 * clamp(V / 10, 0, 1.4);
-      e.psi = wrapPi(e.psi + steer * dt);
+      // nosewheel steering — driven by the rudder (Q/E) AND the roll keys
+      // (A/D / arrows), so taxiing feels natural. Sharp at taxi speed, gentle at
+      // takeoff speed, and none when fully stopped (you have to be rolling).
+      const steerIn = clamp(rudCmd + controls.roll, -1, 1);
+      const steerAuth = V > 0.2 ? clamp(9 / (V + 5), 0.3, 1.7) : 0;
+      e.psi = wrapPi(e.psi + steerIn * 0.4 * steerAuth * dt);
+      // Rotation speed scales with the CURRENT-config stall (takeoff flaps lower it,
+      // so you rotate sooner — exactly like the real Vr ≈ 1.1·Vs in that config).
+      const clMaxCur = ac.clMax + ac.flapClBonus * fL;
+      const vRot = Math.sqrt(2 * weight / (rho * S * clMaxCur)) * 1.1;
       // sit level; raise the nose as you pull through rotation speed
-      const wantPitch = (V > this.vRotate * 0.55 && controls.pitch > 0.1) ? clamp(controls.pitch, 0, 1) * 12 * DEG : 1.5 * DEG;
+      const wantPitch = (V > vRot * 0.6 && controls.pitch > 0.1) ? clamp(controls.pitch, 0, 1) * 12 * DEG : 1.5 * DEG;
       e.theta = damp(e.theta, wantPitch, 6, dt);
       e.phi = damp(e.phi, 0, 8, dt);
       this.q = qFromEuler(e.psi, e.theta, e.phi);
@@ -169,9 +280,9 @@ export class FlightModel {
       // Lift the wing actually makes at this attitude. On the ground the plane
       // rolls horizontally so the velocity-derived AoA is ~0 — use the pitch
       // attitude as the angle of attack instead, or it could never rotate.
-      const clG = Math.min(ac.cl0 + ac.clAlpha * e.theta + ac.flapClBonus * this.surf.flap, ac.clMax);
+      const clG = Math.min(ac.cl0 + ac.clAlpha * e.theta + ac.flapClBonus * fL, clMaxCur);
       const liftG = qbar * ac.wingArea * clG;
-      if (V > this.vRotate && liftG >= weight) {
+      if (V > vRot && liftG >= weight) {
         this.onGround = false;
         this.height = groundH + 0.5;                              // clear the wheels
         this.uvw = [V * Math.cos(e.theta), 0, V * Math.sin(e.theta)]; // AoA = pitch attitude
@@ -190,9 +301,27 @@ export class FlightModel {
     const Fx = qbar * S * (CL * Math.sin(this.alpha) - CD * Math.cos(this.alpha)) + thrust;
     const Fy = qbar * S * CY;
     const Fz = qbar * S * (-CL * Math.cos(this.alpha) - CD * Math.sin(this.alpha));
-    const ax = Fx / ac.mass + gBody[0];
-    const ay = Fy / ac.mass + gBody[1];
-    const az = Fz / ac.mass + gBody[2];
+
+    // ── landing-gear oleo normal force (spring + damper) ──
+    // A one-sided cushion: it only pushes UP, and only when the wheels are at/below
+    // the ground. This absorbs the touchdown sink over the strut's travel instead of
+    // snapping — soft arrivals barely compress, firm ones load up and gently rebound.
+    let gA0 = 0, gA1 = 0, gA2 = 0;
+    if (this.height < groundH) {
+      const pen = groundH - this.height;            // compression below rest (m)
+      const compRate = -this.verticalSpeed;          // +ve = compressing (sinking in)
+      const cEff = compRate >= 0 ? this._gearC : this._gearC * 1.25; // firmer on rebound (no pogo)
+      let Fn = this._gearK * Math.max(pen, 0) + cEff * compRate;
+      if (pen > this._gearTravel * 0.9) Fn += this._gearK * 6 * (pen - this._gearTravel * 0.9); // bottoming bumper
+      Fn = clamp(Fn, 0, 8 * weight);                 // never pull down; cap a pathological frame
+      this._gearLoad = Fn;
+      const gb = matTVec(R, [0, 0, -Fn]);            // NED-up force → body axes
+      gA0 = gb[0] / ac.mass; gA1 = gb[1] / ac.mass; gA2 = gb[2] / ac.mass;
+    } else this._gearLoad = 0;
+
+    const ax = Fx / ac.mass + gBody[0] + gA0;
+    const ay = Fy / ac.mass + gBody[1] + gA1;
+    const az = Fz / ac.mass + gBody[2] + gA2;
 
     // translational EOM:  V_dot = F/m + g - omega × V
     const p = this.p, qr = this.q_rate, r = this.r;
@@ -204,7 +333,7 @@ export class FlightModel {
     // aerodynamic moments (nondimensional rates)
     const phat = p * b / (2 * Vsafe), qhat = qr * c / (2 * Vsafe), rhat = r * b / (2 * Vsafe);
     const Cl = D.Clbeta * this.beta + D.Clp * phat + D.Clr * rhat + D.Clda * this.surf.aileron + D.Cldr * this.surf.rudder;
-    const Cm = D.Cm0 + D.Cmalpha * this.alpha + D.Cmq * qhat + D.Cmde * this.surf.elevator + D.Cmflap * this.surf.flap;
+    const Cm = D.Cm0 + D.Cmalpha * this.alpha + D.Cmq * qhat + D.Cmde * this.surf.elevator + D.Cmflap * fL;
     const Cn = D.Cnbeta * this.beta + D.Cnp * phat + D.Cnr * rhat + D.Cnda * this.surf.aileron + D.Cndr * this.surf.rudder;
     const Lm = qbar * S * b * Cl, Mm = qbar * S * c * Cm, Nm = qbar * S * b * Cn;
 
@@ -224,31 +353,72 @@ export class FlightModel {
     this.q = qNorm([this.q[0] + 0.5 * qd[0] * dt, this.q[1] + 0.5 * qd[1] * dt, this.q[2] + 0.5 * qd[2] * dt, this.q[3] + 0.5 * qd[3] * dt]);
 
     this.V = Math.hypot(u, v, w);
-    // structural failure: pulling too many G or blowing past never-exceed speed
-    if (this.loadFactor > 15 || this.V > ac.vne * 1.4) this.crashed = true;
+    // Overspeed is judged in INDICATED airspeed (VMO) and true Mach (MMO) — the real
+    // limits. A warning past the placard; structural failure well past it (≈ Vd/Md).
+    this.overspeed = this.ias > ac.vne || (this.mmo > 0 && this.mach > this.mmo);
+    if (this.loadFactor > 15 || this.ias > ac.vne * 1.3 || (this.mmo > 0 && this.mach > this.mmo * 1.07)) this.crashed = true;
     this._integratePosition(dt);
     this._updateEuler();
 
-    // ground impact
-    if (this.height <= groundH) {
-      const sink = -this.verticalSpeed;
-      this.height = groundH; this.onGround = true;
-      this.uvw = [Math.hypot(u, v, w) * 0.9, 0, 0];
-      this.p = this.q_rate = this.r = 0;
-      this._euler.theta = 2 * DEG; this._euler.phi = 0;
-      this.q = qFromEuler(this._euler.psi, this._euler.theta, 0);
-      if (sink > 7 || this.loadFactor > 5 || Math.abs(this._euler.phi) > 50 * DEG) this.crashed = true;
+    // ── gear contact: cushioned touchdown (the oleo force above does the work) ──
+    if (this.height < groundH) {
+      // a fresh wheel contact — the moment of touchdown, or a bounce back down
+      if (!this._inContact) {
+        this._inContact = true;
+        const sink = Math.max(-this.verticalSpeed, 0);          // m/s, +descending
+        this._touchCount = (this._touchCount || 0) + 1;
+        // weight-dependent impulse model → peak touchdown G (MSFS-Landing-Inspector)
+        const impactDur = 0.355 + (-0.103 / (1 + Math.pow(Math.max(ac.mass, 50) / 15463, 1.28)));
+        const td = {
+          sinkMs: sink, fpm: sink * 196.8503937,
+          g: 1 + (2 * sink / impactDur) / G,
+          bankDeg: Math.abs(this._euler.phi) / DEG,
+          pitchDeg: this._euler.theta / DEG,
+          crabDeg: Math.abs(this.beta) / DEG,
+          vKt: this.V * 1.943844, vStall: this.ac.stallSpeed,
+          gearDown: this.gearDown,
+          bounces: this._touchCount - 1,
+        };
+        // grade the HARDEST touchdown, not the final settle (carry the bounce count)
+        if (!this.lastTouchdown || sink > this.lastTouchdown.sinkMs) this.lastTouchdown = td;
+        else this.lastTouchdown.bounces = td.bounces;
+        // only a genuinely violent arrival collapses the gear — below this the
+        // oleo absorbs it and the scorer rates it (a hard landing, not a crash)
+        if (sink > 10 || td.bankDeg > 60) this.crashed = true;
+      }
+      // never tunnel through the strut's mechanical travel
+      if (this.height < groundH - this._gearTravel) {
+        this.height = groundH - this._gearTravel;
+        if (this.verticalSpeed < 0) { this.uvw[2] = Math.min(this.uvw[2], 0); this.verticalSpeed = 0; }
+      }
+      // settled on the wheels → hand over to the rolling/taxi sub-model
+      if (Math.abs(this.verticalSpeed) < 0.5) {
+        this._settleT += dt;
+        if (this._settleT > 0.12) {
+          this.onGround = true;
+          this.justLanded = !this.crashed && !!this.lastTouchdown;
+          this._inContact = false; this._touchCount = 0; this._settleT = 0;
+        }
+      } else this._settleT = 0;
+    } else {
+      if (this._inContact && this.height > groundH + 0.05) this._inContact = false; // bounced clear
+      if (this.height > groundH + 60) { this._touchCount = 0; this.lastTouchdown = null; } // go-around resets
     }
   }
 
   _integratePosition(dt) {
     const R = matFromQ(this.q);
-    const vned = matVec(R, this.uvw);             // [vN, vE, vD]
-    this.lat += (vned[0] * dt) / (R_EARTH + this.height);
-    this.lon += (vned[1] * dt) / ((R_EARTH + this.height) * Math.cos(this.lat));
+    const vned = matVec(R, this.uvw);             // air-relative velocity [vN, vE, vD]
+    // ground track = air velocity + wind (the air mass moves). Aero stays on
+    // airspeed (uvw), so you crab into wind and ground speed ≠ airspeed — realistic.
+    const wn = this.onGround ? 0 : this.wind.n;
+    const we = this.onGround ? 0 : this.wind.e;
+    const gN = vned[0] + wn, gE = vned[1] + we;
+    this.lat += (gN * dt) / (R_EARTH + this.height);
+    this.lon += (gE * dt) / ((R_EARTH + this.height) * Math.cos(this.lat));
     this.height += -vned[2] * dt;
     this.verticalSpeed = -vned[2];
-    this.groundSpeed = Math.hypot(vned[0], vned[1]);
+    this.groundSpeed = Math.hypot(gN, gE);
   }
 
   _updateEuler() {
@@ -263,8 +433,19 @@ export class FlightModel {
   // ── control inputs ──
   addThrottle(d) { this.throttle = clamp(this.throttle + d, 0, 1); }
   setThrottle(v) { this.throttle = clamp(v, 0, 1); }
-  addFlaps(d)    { this.flaps = clamp(this.flaps + d, 0, 1); }
-  toggleGear()   { if (!this.onGround) this.gearDown = !this.gearDown; }
+  // Flaps step through real DETENTS one notch at a time (d = +1 extend / -1 retract).
+  // Returns the new detent label so the UI can confirm the selection.
+  addFlaps(d) {
+    const dir = Math.sign(d);
+    if (!dir || !this.flapDetents) return this.flapLabel;
+    const ni = clamp(this.flapIndex + dir, 0, this.flapDetents.length - 1);
+    if (ni === this.flapIndex) return this.flapLabel;
+    this.flapIndex = ni;
+    this.flapDeg = this.flapDetents[ni].deg;
+    this.flaps = this.flapDeg / this.flapDegMax;   // normalized command (aero/visual target)
+    return this.flapLabel;
+  }
+  toggleGear()   { if (!this.onGround && !this.fixedGear) this.gearDown = !this.gearDown; }
   toggleParking(){ this.parkingBrake = !this.parkingBrake; }
   addTrim(d)     { this.trim = clamp(this.trim + d, -0.6, 0.6); }
   toggleAP()     { this.autopilotLevel = !this.autopilotLevel; }

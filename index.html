@@ -36,12 +36,15 @@
       <div class="hud-row"><span class="lbl">AOA</span><span id="hudAoa" class="val">0</span><span class="unit">°</span></div>
       <div class="hud-row"><span class="lbl">G</span><span id="hudG" class="val">1.0</span></div>
     </div>
+    <!-- live weather readout -->
+    <div id="hudWx" class="hud-wx hidden"></div>
     <!-- destination / route readout -->
     <div id="hudDest" class="hud-dest hidden"></div>
     <!-- center reticle + warnings -->
     <div class="hud-center">
       <div id="stallWarn" class="warn hidden">STALL</div>
       <div id="gearWarn" class="warn warn-amber hidden">GEAR UP</div>
+      <div id="overWarn" class="warn warn-amber hidden">FLAP OVERSPEED</div>
     </div>
     <!-- bottom control state -->
     <div class="hud-bottom">
@@ -50,6 +53,7 @@
       <span id="brakePill" class="pill">BRAKE</span>
       <span id="parkPill" class="pill pill-on">PARK</span>
       <span id="apPill" class="pill">AP OFF</span>
+      <span id="landPill" class="pill">LAND OFF</span>
       <span id="camPill" class="pill">CHASE</span>
     </div>
   </div>
@@ -69,10 +73,22 @@
     </div>
   </div>
 
+  <!-- 2D cockpit frame (shown in cockpit view) -->
+  <div id="cockpit" class="cockpit">
+    <div class="ckpt-pillar ckpt-pillar-l"></div>
+    <div class="ckpt-pillar ckpt-pillar-r"></div>
+    <div class="ckpt-glare"></div>
+    <div class="ckpt-dash">
+      <div class="ckpt-screen ckpt-screen-l"></div>
+      <div class="ckpt-screen ckpt-screen-r"></div>
+    </div>
+    <div class="ckpt-yoke"></div>
+  </div>
+
   <!-- Top toolbar -->
   <div id="toolbar" class="toolbar hidden">
     <button class="tb-btn" id="btnMenu" title="Menu (Esc)">☰</button>
-    <div class="tb-title">✈ EarthFlight <span id="buildTag" style="color:#38e1ff;font-size:11px;font-weight:600;">BUILD 16</span></div>
+    <div class="tb-title">✈ EarthFlight <span id="buildTag" style="color:#38e1ff;font-size:11px;font-weight:600;">BUILD 31</span></div>
     <div class="tb-spacer"></div>
     <div class="tb-coords" id="tbCoords">—</div>
     <button class="tb-btn" id="btnPanel" title="Toggle instrument panel (P)">🎛</button>
@@ -120,6 +136,16 @@
 
         <!-- WORLD TAB -->
         <section class="tab" data-tab="world">
+          <h3>Sound</h3>
+          <input id="volSlider" type="range" min="0" max="100" step="1" value="70" />
+          <div class="hint" id="volLabel">Engine, wind &amp; warnings — 70%</div>
+
+          <h3>Weather</h3>
+          <div class="field-check">
+            <label><input type="checkbox" id="realWeather" checked /> Live real-world weather (wind, clouds, conditions)</label>
+          </div>
+          <p class="hint" id="wxStatus">Real wind &amp; conditions are pulled from Open-Meteo for wherever you're flying.</p>
+
           <h3>Time of day</h3>
           <input id="timeSlider" type="range" min="0" max="24" step="0.1" value="14" />
           <div class="hint" id="timeLabel">14:00 local-ish</div>
@@ -131,12 +157,13 @@
             <button data-q="high">High</button>
           </div>
 
-          <h3>Unlock photorealistic Earth (optional)</h3>
+          <h3>Scenery source</h3>
           <p class="hint">
-            Out of the box you fly over free worldwide satellite imagery — no key needed.
-            Paste a free <b>Cesium ion</b> token for 3D terrain + buildings, and/or a
-            <b>Google Maps</b> API key for full Google-Earth photorealistic 3D tiles.
-            Keys are stored only in your browser (localStorage).
+            <b>Photorealistic 3D</b> streams real, textured Google-Earth buildings —
+            it's on by default and needs no key (it's routed through the built-in
+            Cesium ion token). <b>3D blocks (OSM)</b> is a lighter option with
+            untextured building shapes. <b>Satellite</b> is flat imagery only.
+            Optionally paste your own keys below; they're stored only in your browser.
           </p>
           <div class="field">
             <label>Cesium ion access token</label>
@@ -147,9 +174,9 @@
             <input id="googleKey" type="password" placeholder="AIza…" />
           </div>
           <div class="seg" id="worldSeg">
-            <button data-w="satellite" class="active">Satellite (free)</button>
-            <button data-w="ion">ion terrain + buildings</button>
-            <button data-w="google">Google 3D</button>
+            <button data-w="google" class="active">Photorealistic 3D ✨</button>
+            <button data-w="ion">3D blocks (OSM)</button>
+            <button data-w="satellite">Satellite (flat)</button>
           </div>
           <div class="row gap">
             <button id="btnApplyWorld" class="btn primary">Apply &amp; reload world</button>
